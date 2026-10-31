@@ -93,7 +93,13 @@
   const icons = {
     back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>',
     list: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>',
-    type: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20l5-14 5 14M6 15h6M15 20l3-8 3 8M16 18h4"/></svg>'
+    type: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20l5-14 5 14M6 15h6M15 20l3-8 3 8M16 18h4"/></svg>',
+    listen: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg>',
+    play: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>',
+    pause: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>',
+    rewind: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 17l-5-5 5-5M18 17l-5-5 5-5"/></svg>',
+    forward: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 17l5-5-5-5M6 17l5-5-5-5"/></svg>',
+    close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>'
   };
 
   // ---------- preferences ----------
@@ -343,6 +349,236 @@
       h('p', { class: 'small' }, h('button', { class: 'icon-btn small', type: 'button', onclick: signOut }, 'Sign out of this device'))));
   }
 
+  // ---------- read aloud (browser speech synthesis) ----------
+
+  const speechSupported = 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window;
+  let onVoiceChange = () => {};
+
+  // Novelty voices that ship with macOS/iOS and are unpleasant for long reading.
+  const NOVELTY_VOICES = /\b(albert|bad news|bahh|bells|boing|bubbles|cellos|good news|jester|organ|superstar|trinoids|whisper|wobble|zarvox|deranged|hysterical|pipe organ)\b/i;
+
+  function voiceScore(v) {
+    let s = 0;
+    if (NOVELTY_VOICES.test(v.name)) s -= 20;
+    if (/natural|neural/i.test(v.name)) s += 6;
+    if (/premium|enhanced|siri/i.test(v.name)) s += 4;
+    if (/online/i.test(v.name)) s += 2;
+    if (/google/i.test(v.name)) s += 2;
+    if (/^en[-_]US/i.test(v.lang)) s += 1;
+    if (v.default) s += 1;
+    return s;
+  }
+
+  function rankedVoices() {
+    return speechSynthesis.getVoices()
+      .filter(v => /^en([-_]|$)/i.test(v.lang))
+      .sort((a, b) => voiceScore(b) - voiceScore(a) || a.name.localeCompare(b.name));
+  }
+
+  function pickVoice() {
+    const voices = rankedVoices();
+    const wanted = prefs().voice;
+    return voices.find(v => v.voiceURI === wanted) || voices[0] || null;
+  }
+
+  function voiceLabel(v) {
+    const name = v.name.replace(/^Microsoft\s+/, '').replace(/\s+-\s+English.*$/, '');
+    return `${name} (${v.lang.replace('_', '-')})`;
+  }
+
+  // Short utterances avoid Chrome's habit of silently stopping long ones.
+  function chunkText(text) {
+    const clean = text.replace(/\s+/g, ' ').trim();
+    const sentences = clean.match(/[^.!?\u2026]+[.!?\u2026]+["\u201d\u2019)\]]*\s*|[^.!?\u2026]+$/g) || [clean];
+    const chunks = [];
+    let cur = '';
+    for (const s of sentences) {
+      if (cur && (cur + s).length > 220) { chunks.push(cur.trim()); cur = ''; }
+      cur += s;
+    }
+    if (cur.trim()) chunks.push(cur.trim());
+    return chunks.filter(Boolean);
+  }
+
+  const RATES = [0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
+
+  function createNarrator({ onChapterEnd }) {
+    const state = { items: [], i: 0, chunks: [], j: 0, playing: false, token: 0, utter: null, wake: null, open: false };
+
+    const playBtn = h('button', { class: 'play', type: 'button', 'aria-label': 'Play', onclick: () => (state.playing ? pause() : play()) });
+    const rateBtn = h('button', { class: 'rate', type: 'button', 'aria-label': 'Reading speed', onclick: cycleRate });
+    const status = h('span', { class: 'player-status', 'aria-live': 'polite' });
+    const player = h('div', { class: 'player', role: 'region', 'aria-label': 'Read aloud', hidden: true },
+      playBtn,
+      status,
+      h('button', { type: 'button', 'aria-label': 'Previous paragraph', onclick: () => jumpTo(state.i - 1), html: icons.rewind }),
+      h('button', { type: 'button', 'aria-label': 'Next paragraph', onclick: () => jumpTo(state.i + 1), html: icons.forward }),
+      rateBtn,
+      h('button', { type: 'button', 'aria-label': 'Close read aloud', onclick: close, html: icons.close }));
+    document.body.append(player);
+
+    const rate = () => prefs().rate || 1;
+
+    function render() {
+      playBtn.innerHTML = state.playing ? icons.pause : icons.play;
+      playBtn.setAttribute('aria-label', state.playing ? 'Pause' : 'Play');
+      rateBtn.textContent = `${rate()}\u00d7`;
+      const pct = state.items.length ? Math.round((state.i / state.items.length) * 100) : 0;
+      status.textContent = `${state.playing ? 'Reading' : 'Paused'} \u00b7 ${Math.min(pct, 100)}%`;
+    }
+
+    function mark() {
+      document.querySelectorAll('.speaking').forEach(el => el.classList.remove('speaking'));
+      const item = state.items[state.i];
+      if (!item) return;
+      item.el.classList.add('speaking');
+      const r = item.el.getBoundingClientRect();
+      const bottomLimit = innerHeight - player.offsetHeight - 24;
+      if (r.top < 72 || r.top > bottomLimit) item.el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+
+    function speak() {
+      if (!state.playing) return;
+      if (state.i >= state.items.length) { finish(); return; }
+      if (!state.chunks.length) state.chunks = chunkText(state.items[state.i].text);
+      if (!state.chunks.length) { next(); return; }
+      if (state.j === 0) mark();
+
+      const u = new SpeechSynthesisUtterance(state.chunks[state.j]);
+      const voice = pickVoice();
+      if (voice) { u.voice = voice; u.lang = voice.lang; }
+      u.rate = rate();
+      const token = ++state.token;
+      u.onend = () => { if (token === state.token && state.playing) next(); };
+      u.onerror = e => {
+        if (token !== state.token) return;
+        if (e.error === 'interrupted' || e.error === 'canceled') return;
+        if (e.error === 'not-allowed') { pause(); return; }
+        next();
+      };
+      state.utter = u; // Keep a reference; Chrome can drop events for collected utterances.
+      speechSynthesis.speak(u);
+      render();
+    }
+
+    function next() {
+      state.j++;
+      if (state.j >= state.chunks.length) { state.i++; state.j = 0; state.chunks = []; }
+      speak();
+    }
+
+    function restart() {
+      state.token++;
+      speechSynthesis.cancel();
+      // iOS ignores speak() issued in the same tick as cancel().
+      setTimeout(speak, 80);
+    }
+
+    function jumpTo(i) {
+      state.i = Math.max(0, Math.min(state.items.length - 1, i));
+      state.j = 0;
+      state.chunks = [];
+      if (state.playing) restart(); else { mark(); render(); }
+    }
+
+    async function holdScreen() {
+      try { if ('wakeLock' in navigator && !state.wake) state.wake = await navigator.wakeLock.request('screen'); } catch { /* not allowed */ }
+    }
+    function releaseScreen() {
+      if (state.wake) state.wake.release().catch(() => {});
+      state.wake = null;
+    }
+
+    function play() {
+      state.playing = true;
+      holdScreen();
+      restart();
+      render();
+    }
+
+    function pause() {
+      state.playing = false;
+      state.token++;
+      speechSynthesis.cancel();
+      releaseScreen();
+      render();
+    }
+
+    function close() {
+      pause();
+      state.open = false;
+      player.hidden = true;
+      document.body.classList.remove('listening');
+      document.querySelectorAll('.speaking').forEach(el => el.classList.remove('speaking'));
+    }
+
+    function cycleRate() {
+      const idx = RATES.indexOf(rate());
+      setPref('rate', RATES[(idx + 1) % RATES.length]);
+      if (state.playing) restart();
+      render();
+    }
+
+    async function finish() {
+      state.playing = false;
+      render();
+      const continued = await onChapterEnd();
+      if (!continued) { releaseScreen(); status.textContent = 'Finished'; }
+    }
+
+    function firstVisible() {
+      const top = 72;
+      const idx = state.items.findIndex(item => item.el.getBoundingClientRect().bottom > top);
+      return idx < 0 ? 0 : idx;
+    }
+
+    // Collect the readable pieces of the chapter currently on screen.
+    function load(article, chapter) {
+      const head = article.querySelector('.chapter-head h1');
+      const headText = chapter.title && chapter.label !== chapter.title ? `${chapter.label}. ${chapter.title}.` : `${chapterName(chapter)}.`;
+      state.items = [{ el: head, text: headText }]
+        .concat([...article.querySelectorAll('.prose > p')].map(el => ({ el, text: el.textContent })));
+      state.i = 0;
+      state.j = 0;
+      state.chunks = [];
+      article.querySelector('.prose').addEventListener('click', e => {
+        if (!state.open || String(getSelection())) return;
+        const p = e.target.closest('.prose > p');
+        const idx = state.items.findIndex(item => item.el === p);
+        if (idx > 0) jumpTo(idx);
+      });
+    }
+
+    function open() {
+      state.open = true;
+      player.hidden = false;
+      document.body.classList.add('listening');
+      state.i = firstVisible();
+      state.j = 0;
+      state.chunks = [];
+      play();
+    }
+
+    function startFromTop() {
+      state.i = 0;
+      state.j = 0;
+      state.chunks = [];
+      play();
+    }
+
+    onVoiceChange = () => { if (state.playing) restart(); };
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState !== 'visible' || !state.playing) return;
+      holdScreen();
+      if (!speechSynthesis.speaking) restart();
+    });
+    addEventListener('pagehide', () => speechSynthesis.cancel());
+    speechSynthesis.addEventListener?.('voiceschanged', render);
+
+    render();
+    return { load, open, startFromTop, toggle: () => (state.open ? close() : open()), isOpen: () => state.open };
+  }
+
   function settingsSheet() {
     let open = null;
 
@@ -370,7 +606,20 @@
           seg('theme', theme, [['light', 'Light', 'swatch-light'], ['sepia', 'Sepia', 'swatch-sepia'], ['dark', 'Dark', 'swatch-dark'], ['auto', 'Auto']])),
         h('div', { class: 'sheet-row' }, h('h2', {}, 'Font'),
           seg('font', font, [['serif', 'Serif'], ['sans', 'Sans']])),
+        voiceRow(),
         h('button', { type: 'button', class: 'signout', onclick: signOut }, 'Sign out of this device'));
+    }
+
+    function voiceRow() {
+      if (!speechSupported) return null;
+      const voices = rankedVoices();
+      if (!voices.length) return null;
+      const chosen = pickVoice();
+      const select = h('select', {
+        'aria-label': 'Read-aloud voice',
+        onchange: e => { setPref('voice', e.target.value); onVoiceChange(); }
+      }, voices.map(v => h('option', { value: v.voiceURI, selected: chosen && v.voiceURI === chosen.voiceURI }, voiceLabel(v))));
+      return h('div', { class: 'sheet-row' }, h('h2', {}, 'Read-aloud voice'), select);
     }
 
     function refresh() {
@@ -406,10 +655,16 @@
     const app = document.getElementById('app');
     const toggleSettings = settingsSheet();
     const titleEl = h('span', {}, book.title);
+    let narrator = null;
+    const listenBtn = speechSupported
+      ? h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Listen', title: 'Read aloud', onclick: () => narrator && narrator.toggle(), html: icons.listen })
+      : null;
     const bar = topbar(
       h('a', { class: 'icon-btn', href: `book.html?b=${book.slug}`, 'aria-label': 'Contents', html: icons.list }),
       titleEl,
-      h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Reading settings', onclick: toggleSettings, html: icons.type }));
+      h('div', { class: 'topbar-actions' },
+        listenBtn,
+        h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Reading settings', onclick: toggleSettings, html: icons.type })));
     const bar_progress = h('div', { class: 'progress', 'aria-hidden': 'true' }, h('span'));
     const main = h('main');
     app.replaceChildren(bar_progress, bar, main);
@@ -419,48 +674,69 @@
 
     const toc = await fetchSealed(`data/${book.slug}/toc.bin`);
     const total = toc.chapters.length;
-    const n = Math.min(total, Math.max(1, parseInt(params.get('c'), 10) || 1));
-    const chapter = await fetchSealed(`data/${book.slug}/${String(n).padStart(2, '0')}.bin`);
-
-    const name = chapterName(chapter);
-    const fullName = chapter.title ? `${chapter.label} \u00b7 ${chapter.title}` : chapter.label;
-    document.title = `${fullName} \u00b7 ${book.title}`;
-    titleEl.textContent = fullName;
-
-    const showLabel = chapter.title && chapter.label !== chapter.title;
-    const article = h('article', { class: 'reader' },
-      h('header', { class: 'chapter-head' },
-        showLabel ? h('p', { class: 'chapter-label' }, chapter.label) : null,
-        h('h1', {}, name),
-        h('span', { html: flourishSvg })),
-      h('div', { class: 'prose', html: chapter.html }),
-      n === total ? h('p', { class: 'chapter-end' }, `The end of Book ${book.number}`) : null);
-
-    const link = (i, cls, dir) => {
-      const c = toc.chapters[i - 1];
-      return h('a', { class: cls, href: `read.html?b=${book.slug}&c=${i}`, rel: cls },
-        h('span', { class: 'dir' }, dir), h('span', { class: 'name' }, chapterName(c)));
-    };
-    const nextBook = BOOKS[BOOKS.indexOf(book) + 1];
-    const nav = h('nav', { class: 'chapter-nav', 'aria-label': 'Chapters' },
-      n > 1 ? link(n - 1, 'prev', 'Previous') : null,
-      n < total
-        ? link(n + 1, 'next', 'Next')
-        : nextBook
-          ? h('a', { class: 'next', href: `book.html?b=${nextBook.slug}` },
-              h('span', { class: 'dir' }, `Book ${nextBook.number}`), h('span', { class: 'name' }, nextBook.title))
-          : h('a', { class: 'next', href: './' }, h('span', { class: 'dir' }, 'Finished'), h('span', { class: 'name' }, 'All books')));
-
-    main.replaceChildren(article, nav);
-
-    // Restore the saved position for this chapter, then keep it updated.
-    const saved = progressFor(book.slug);
+    let n = Math.min(total, Math.max(1, parseInt(params.get('c'), 10) || 1));
     const scrollable = () => Math.max(1, document.documentElement.scrollHeight - innerHeight);
-    if (saved && saved.c === n && saved.p > 0.01 && !location.hash) {
-      requestAnimationFrame(() => scrollTo(0, saved.p * scrollable()));
-    } else {
-      scrollTo(0, 0);
+    const chapterUrl = i => `read.html?b=${book.slug}&c=${i}`;
+    const chapterFile = i => `data/${book.slug}/${String(i).padStart(2, '0')}.bin`;
+    const nextBook = BOOKS[BOOKS.indexOf(book) + 1];
+
+    // Renders a chapter in place, so read-aloud can carry on without a page load.
+    async function showChapter(target, { listening = false } = {}) {
+      const chapter = await fetchSealed(chapterFile(target));
+      n = target;
+
+      const name = chapterName(chapter);
+      const fullName = chapter.title ? `${chapter.label} \u00b7 ${chapter.title}` : chapter.label;
+      document.title = `${fullName} \u00b7 ${book.title}`;
+      titleEl.textContent = fullName;
+
+      const showLabel = chapter.title && chapter.label !== chapter.title;
+      const article = h('article', { class: 'reader' },
+        h('header', { class: 'chapter-head' },
+          showLabel ? h('p', { class: 'chapter-label' }, chapter.label) : null,
+          h('h1', {}, name),
+          h('span', { html: flourishSvg })),
+        h('div', { class: 'prose', html: chapter.html }),
+        n === total ? h('p', { class: 'chapter-end' }, `The end of Book ${book.number}`) : null);
+
+      const link = (i, cls, dir) => h('a', { class: cls, href: chapterUrl(i), rel: cls },
+        h('span', { class: 'dir' }, dir), h('span', { class: 'name' }, chapterName(toc.chapters[i - 1])));
+      const nav = h('nav', { class: 'chapter-nav', 'aria-label': 'Chapters' },
+        n > 1 ? link(n - 1, 'prev', 'Previous') : null,
+        n < total
+          ? link(n + 1, 'next', 'Next')
+          : nextBook
+            ? h('a', { class: 'next', href: `book.html?b=${nextBook.slug}` },
+                h('span', { class: 'dir' }, `Book ${nextBook.number}`), h('span', { class: 'name' }, nextBook.title))
+            : h('a', { class: 'next', href: './' }, h('span', { class: 'dir' }, 'Finished'), h('span', { class: 'name' }, 'All books')));
+
+      main.replaceChildren(article, nav);
+      if (narrator) narrator.load(article, chapter);
+
+      const saved = progressFor(book.slug);
+      if (!listening && saved && saved.c === n && saved.p > 0.01 && !location.hash) {
+        requestAnimationFrame(() => scrollTo(0, saved.p * scrollable()));
+      } else {
+        scrollTo(0, 0);
+      }
+
+      if (n < total) fetch(chapterFile(n + 1)).catch(() => {});
     }
+
+    if (speechSupported) {
+      narrator = createNarrator({
+        onChapterEnd: async () => {
+          if (n >= total) return false;
+          history.pushState(null, '', chapterUrl(n + 1));
+          await showChapter(n + 1, { listening: true });
+          narrator.startFromTop();
+          return true;
+        }
+      });
+    }
+    addEventListener('popstate', () => location.reload());
+
+    await showChapter(n);
 
     const fill = bar_progress.firstChild;
     let lastY = scrollY;
@@ -492,8 +768,6 @@
       if (e.key === 'ArrowRight' && n < total) location.href = `read.html?b=${book.slug}&c=${n + 1}`;
       if (e.key === 'ArrowLeft' && n > 1) location.href = `read.html?b=${book.slug}&c=${n - 1}`;
     });
-
-    if (n < total) fetch(`data/${book.slug}/${String(n + 1).padStart(2, '0')}.bin`).catch(() => {});
   }
 
   // ---------- boot ----------

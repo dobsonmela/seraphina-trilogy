@@ -577,10 +577,62 @@ html[data-font="sans"] .prose { font-family: var(--sans); line-height: 1.7; }
 .segmented .swatch-dark { background: #121323; color: #e6e3f0; }
 .size-row { display: grid; grid-template-columns: 44px 1fr 44px; align-items: center; text-align: center; gap: 0.5rem; }
 .size-row button { min-height: 44px; border: 1.5px solid var(--rule); border-radius: 10px; background: var(--bg); cursor: pointer; }
+.sheet select {
+  min-height: 44px;
+  width: 100%;
+  padding: 0 0.6rem;
+  border: 1.5px solid var(--rule);
+  border-radius: 10px;
+  background: var(--bg);
+}
 .sheet .signout { align-self: flex-start; background: none; border: 0; padding: 0.25rem 0; color: var(--accent); cursor: pointer; text-decoration: underline; }
 
+/* Read-aloud player */
+.topbar-actions { display: flex; align-items: center; }
+.player {
+  position: fixed; z-index: 35;
+  left: 50%;
+  bottom: max(0.75rem, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  width: min(30rem, calc(100% - 1.5rem));
+  display: flex; align-items: center; gap: 0.15rem;
+  padding: 0.4rem 0.5rem 0.4rem 0.4rem;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  box-shadow: var(--shadow);
+}
+.player[hidden] { display: none; }
+.player button {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 44px; min-height: 44px;
+  border: 0; border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+}
+.player button:hover { background: color-mix(in srgb, var(--ink) 8%, transparent); }
+.player button svg { width: 22px; height: 22px; }
+.player .play { width: 52px; height: 52px; background: var(--accent); color: var(--accent-ink); }
+.player .play:hover { background: var(--accent); filter: brightness(1.08); }
+.player .rate { min-width: 52px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.player-status {
+  flex: 1; min-width: 0;
+  padding-left: 0.5rem;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+body.listening .chapter-nav { padding-bottom: 7rem; }
+body.listening .prose p { cursor: pointer; }
+.speaking {
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+  box-shadow: 0 0 0 0.4em color-mix(in srgb, var(--accent) 13%, transparent);
+  transition: background-color 0.2s ease;
+}
+
 @media print {
-  .topbar, .chapter-nav, .progress, .sheet, .sheet-backdrop { display: none !important; }
+  .topbar, .chapter-nav, .progress, .sheet, .sheet-backdrop, .player { display: none !important; }
   body { background: #fff; color: #000; }
 }
 
