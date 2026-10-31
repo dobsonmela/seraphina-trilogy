@@ -375,8 +375,8 @@
       .sort((a, b) => voiceScore(b) - voiceScore(a) || a.name.localeCompare(b.name));
   }
 
-  // Daniel is Apple's British voice; other platforms fall back to the best-ranked voice.
-  const DEFAULT_VOICE = v => /^daniel\b/i.test(v.name) && /^en[-_]GB/i.test(v.lang);
+  // Karen is Apple's Australian voice; other platforms fall back to the best-ranked voice.
+  const DEFAULT_VOICE = v => /^karen\b/i.test(v.name) && /^en[-_]AU/i.test(v.lang);
 
   function pickVoice() {
     const voices = rankedVoices();
