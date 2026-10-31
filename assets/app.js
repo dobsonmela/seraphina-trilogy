@@ -375,13 +375,23 @@
       .sort((a, b) => voiceScore(b) - voiceScore(a) || a.name.localeCompare(b.name));
   }
 
-  // Karen is Apple's Australian voice; other platforms fall back to the best-ranked voice.
-  const DEFAULT_VOICE = v => /^karen\b/i.test(v.name) && /^en[-_]AU/i.test(v.lang);
+  // Preferred defaults in order: Andrew Multilingual exists only in Microsoft Edge,
+  // Karen only on Apple devices; anything else falls back to the best-ranked voice.
+  const DEFAULT_VOICES = [
+    v => /andrew\s*multilingual/i.test(v.name) && /^en[-_]US/i.test(v.lang),
+    v => /^karen\b/i.test(v.name) && /^en[-_]AU/i.test(v.lang)
+  ];
 
   function pickVoice() {
     const voices = rankedVoices();
     const wanted = prefs().voice;
-    return voices.find(v => v.voiceURI === wanted) || voices.find(DEFAULT_VOICE) || voices[0] || null;
+    const saved = voices.find(v => v.voiceURI === wanted);
+    if (saved) return saved;
+    for (const match of DEFAULT_VOICES) {
+      const v = voices.find(match);
+      if (v) return v;
+    }
+    return voices[0] || null;
   }
 
   function voiceLabel(v) {
