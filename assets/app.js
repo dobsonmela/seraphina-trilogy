@@ -3,6 +3,10 @@
 
   const AUTHOR = 'Melanie Dobson';
 
+  // Replaced at build time. Book data is cached for hours, so each build gets its own URLs.
+  const DATA_VERSION = '20261107012529';
+  const dataUrl = path => `${path}?v=${DATA_VERSION}`;
+
   const BOOKS = [
     {
       slug: 'resonance',
@@ -190,7 +194,7 @@
   let keys = null;
 
   async function fetchSealed(path) {
-    const res = await fetch(path);
+    const res = await fetch(dataUrl(path));
     if (!res.ok) throw new Error(`missing ${path}`);
     try {
       const plain = await gunzip(await openBox(new Uint8Array(await res.arrayBuffer()), keys));
@@ -733,7 +737,7 @@
         scrollTo(0, 0);
       }
 
-      if (n < total) fetch(chapterFile(n + 1)).catch(() => {});
+      if (n < total) fetch(dataUrl(chapterFile(n + 1))).catch(() => {});
     }
 
     if (speechSupported) {
