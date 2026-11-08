@@ -4,7 +4,7 @@
   const AUTHOR = 'Melanie Dobson';
 
   // Replaced at build time. Book data is cached for hours, so each build gets its own URLs.
-  const DATA_VERSION = '20261108020747';
+  const DATA_VERSION = '20261108020955';
   const dataUrl = path => `${path}?v=${DATA_VERSION}`;
 
   const BOOKS = [
